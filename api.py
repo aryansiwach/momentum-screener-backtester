@@ -807,8 +807,15 @@ def momentum_history(ticker: str, time_range: str = Query("3M", alias="range")):
         if time_range == "1D" and not series.empty:
             last_session_date = series.index[-1].date()
             series = series[series.index.date == last_session_date]
+        # Alpaca's bars come back tz-aware UTC (9:30am ET market open is
+        # 13:30 UTC in EDT) -- displaying that raw would show "13:30" for
+        # the opening bell, which reads as wrong to a US trader even though
+        # the data itself is correct. Convert to market time before
+        # formatting; the session-date filter above stays on the UTC index
+        # since regular hours (13:30-20:00 UTC) never cross a UTC midnight
+        # boundary, so it doesn't need the same conversion.
         points = [
-            {"date": idx.strftime("%Y-%m-%d %H:%M"), "close": round(float(val), 2)}
+            {"date": idx.tz_convert("America/New_York").strftime("%Y-%m-%d %H:%M"), "close": round(float(val), 2)}
             for idx, val in series.items()
         ]
     else:
