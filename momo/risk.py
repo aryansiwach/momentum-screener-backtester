@@ -150,6 +150,42 @@ def check_sector_concentration(ticker_sectors: dict, weights: dict, max_sector_w
     }
 
 
+def check_position_concentration(target_weights: dict, max_position_weight: float = 0.4) -> dict:
+    """Flags any single ticker sitting above max_position_weight of the
+    target portfolio. Sector concentration (check_sector_concentration
+    above) catches several correlated names adding up to one large bet;
+    this catches the simpler case that check misses entirely -- one
+    ticker alone being oversized, whether from a portfolio-construction
+    bug (e.g. top_n=1 by accident) or a bad upstream weight. Default
+    matches check_sector_concentration's 0.4 -- deliberately loose enough
+    to allow this project's own Top-3-equal-weight portfolios (~33%
+    each), which is a real, intended construction, not a bug; it exists
+    to catch an accidental 50%+ single-name bet, not to second-guess a
+    legitimate small-N concentrated pick."""
+    breaches = {t: round(w, 4) for t, w in target_weights.items() if w > max_position_weight}
+    return {
+        "position_weights": {t: round(w, 4) for t, w in target_weights.items()},
+        "breaches": breaches,
+        "within_limits": len(breaches) == 0,
+    }
+
+
+def check_gross_exposure(target_weights: dict, max_gross_exposure: float = 1.05) -> dict:
+    """Sanity-checks that total target exposure (sum of absolute weights,
+    so a long/short book is measured correctly) isn't wildly beyond
+    max_gross_exposure. This isn't a leverage policy -- it's a guard
+    against a portfolio-construction bug reaching the order path silently:
+    weights are supposed to sum to ~1.0 for a long-only book, and nothing
+    upstream currently double-checks that before an order would be built
+    from it. A small tolerance above 1.0 (default 5%) absorbs ordinary
+    floating-point rounding, not a real error."""
+    gross = round(sum(abs(w) for w in target_weights.values()), 4)
+    return {
+        "gross_exposure": gross,
+        "within_limits": gross <= max_gross_exposure,
+    }
+
+
 def evaluate_exit(entry_price, current_price, high_since_entry=None,
                    stop_loss_pct=0.08, take_profit_pct=0.20, trailing_stop_pct=0.10):
     high_since_entry = high_since_entry if high_since_entry is not None else max(entry_price, current_price)

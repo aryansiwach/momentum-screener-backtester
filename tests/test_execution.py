@@ -82,8 +82,11 @@ def _empty_log():
 
 def test_risk_gates_pass_with_empty_log_and_no_sectors():
     # No history to breach a circuit breaker against, and no sector map
-    # supplied -- should not raise.
-    enforce_risk_gates(_empty_log(), equity=10000.0, target_weights={"AAPL": 0.5})
+    # supplied -- should not raise. 0.3 stays under the position-
+    # concentration default (0.4) too, so this stays a test of the
+    # circuit-breaker/sector path specifically, not an accidental hit on
+    # the position-concentration gate added later.
+    enforce_risk_gates(_empty_log(), equity=10000.0, target_weights={"AAPL": 0.3})
 
 
 def test_risk_gates_block_on_circuit_breaker_daily_loss():
@@ -104,3 +107,49 @@ def test_risk_gates_pass_when_sectors_diversified():
     sectors = {"AAPL": "Technology", "JPM": "Financials", "XOM": "Energy"}
     weights = {"AAPL": 0.34, "JPM": 0.33, "XOM": 0.33}
     enforce_risk_gates(_empty_log(), equity=10000.0, target_weights=weights, ticker_sectors=sectors)
+
+
+def test_risk_gates_block_on_single_position_concentration():
+    with pytest.raises(RiskGateBlocked, match="Position concentration"):
+        enforce_risk_gates(_empty_log(), equity=10000.0, target_weights={"AAPL": 0.6, "MSFT": 0.4},
+                            max_position_weight=0.4)
+
+
+def test_risk_gates_block_on_gross_exposure_sanity_check():
+    # each position individually clears the 0.4 single-position cap, but
+    # the total is 1.2 -- must trip gross exposure specifically, not
+    # position concentration.
+    with pytest.raises(RiskGateBlocked, match="Gross exposure"):
+        enforce_risk_gates(_empty_log(), equity=10000.0,
+                            target_weights={"AAPL": 0.4, "MSFT": 0.4, "JPM": 0.4}, max_gross_exposure=1.05)
+
+
+def test_risk_gates_pass_with_default_thresholds_for_a_normal_book():
+    # 10 evenly-weighted positions, the shape a normal top-10 momentum
+    # scan actually produces -- must not trip either new gate at their
+    # defaults.
+    weights = {f"T{i}": 0.10 for i in range(10)}
+    enforce_risk_gates(_empty_log(), equity=10000.0, target_weights=weights)
+
+
+def test_order_log_appends_and_round_trips_via_json(tmp_path, monkeypatch):
+    import json
+    import momo.execution as execution_mod
+
+    log_path = tmp_path / "order_log.jsonl"
+    monkeypatch.setattr(execution_mod, "_ORDER_LOG_PATH", log_path)
+
+    entry = {"timestamp": "2026-01-01T00:00:00+00:00", "orders": {"AAPL": 5}, "risk_gate": "passed", "submissions": []}
+    execution_mod._append_order_log(entry)
+    execution_mod._append_order_log(entry)
+
+    lines = log_path.read_text(encoding="utf-8").strip().split("\n")
+    assert len(lines) == 2
+    assert json.loads(lines[0]) == entry
+
+
+def test_order_log_write_failure_does_not_raise(monkeypatch):
+    import momo.execution as execution_mod
+
+    monkeypatch.setattr(execution_mod, "_ORDER_LOG_PATH", "/nonexistent/deeply/nested/path/order_log.jsonl")
+    execution_mod._append_order_log({"anything": "here"})  # must not raise -- audit logging is best-effort

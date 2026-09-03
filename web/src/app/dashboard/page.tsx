@@ -30,7 +30,15 @@ const c = {
   borderStrong: "#4C3F73",
   fg: "#F8FAFC",
   muted: "#A79FC2",
-  mutedDim: "#6E6390",
+  // Lightened from #6E6390 -- the original failed WCAG AA (3.3:1-3.7:1
+  // against the three dark backgrounds this token is used on; AA needs
+  // 4.5:1 for normal-size text). This token is used everywhere for
+  // small captions, timestamps, and disclaimers, not large/decorative
+  // text, so AA-large's 3:1 exemption doesn't apply. #8479AC clears
+  // 4.5:1 against every background it's actually painted on (verified:
+  // 5.04 vs bg, 4.59 vs card, 4.77 vs cardAlt) while staying the
+  // dimmest/most secondary text tone on the page.
+  mutedDim: "#8479AC",
   accent: "#22C55E",
   accentDim: "#16A34A",
   destructive: "#EF4444",
@@ -539,7 +547,7 @@ export default function Dashboard() {
                 Source: {data.source.replace(/_/g, " ")}
               </span>
             )}
-            <span className="flex items-center gap-1.5">
+            <span className="flex items-center gap-1.5" role="status" aria-live="polite">
               <LivePulse />
               {lastUpdated ? `Live — updated ${lastUpdated.toLocaleTimeString()}` : "Connecting…"}
             </span>
@@ -1049,7 +1057,7 @@ function PremarketWatchSection({ data, onSelect }: { data: PremarketWatch; onSel
           <TrendUp size={14} weight="bold" aria-hidden="true" />
           Pre-market watch — what's moving right now, and why
         </h2>
-        <span className="flex items-center gap-1.5 text-[11px]" style={{ color: c.mutedDim }}>
+        <span className="flex items-center gap-1.5 text-[11px]" style={{ color: c.mutedDim }} role="status" aria-live="polite">
           <LivePulse size="sm" />
           {lastUpdated ? `Updated ${lastUpdated.toLocaleTimeString()}` : "Loading…"}
           {data.scanning && " · rescanning"}

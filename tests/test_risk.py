@@ -8,6 +8,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from momo.risk import (
     evaluate_exit, estimate_price_range, position_preview, check_pdt_compliance,
     check_drawdown_circuit_breaker, check_sector_concentration,
+    check_position_concentration, check_gross_exposure,
 )
 
 
@@ -146,3 +147,44 @@ def test_sector_concentration_unknown_sector_for_missing_ticker():
     result = check_sector_concentration({}, {"XYZ": 0.5}, max_sector_weight=0.4)
     assert result["sector_weights"]["Unknown"] == 0.5
     assert "Unknown" in result["breaches"]
+
+
+def test_position_concentration_flags_oversized_single_ticker():
+    weights = {"AAPL": 0.6, "MSFT": 0.25, "JPM": 0.15}
+    result = check_position_concentration(weights, max_position_weight=0.4)
+    assert result["within_limits"] is False
+    assert result["breaches"] == {"AAPL": 0.6}
+
+
+def test_position_concentration_allows_top3_equal_weight_portfolio():
+    # this project's own real "Top 3 today" construction -- must NOT trip
+    # the default threshold, since it's an intended portfolio shape, not a bug.
+    weights = {"AAPL": 0.34, "MSFT": 0.33, "JPM": 0.33}
+    result = check_position_concentration(weights)
+    assert result["within_limits"] is True
+    assert result["breaches"] == {}
+
+
+def test_gross_exposure_flags_bug_shaped_weight_sum():
+    # a portfolio-construction bug that double-counted a ticker, or added
+    # to instead of replacing prior weights -- sums to 150%
+    weights = {"AAPL": 0.5, "MSFT": 0.5, "JPM": 0.5}
+    result = check_gross_exposure(weights, max_gross_exposure=1.05)
+    assert result["within_limits"] is False
+    assert result["gross_exposure"] == 1.5
+
+
+def test_gross_exposure_within_limits_for_normal_long_only_book():
+    weights = {"AAPL": 0.34, "MSFT": 0.33, "JPM": 0.33}
+    result = check_gross_exposure(weights, max_gross_exposure=1.05)
+    assert result["within_limits"] is True
+
+
+def test_gross_exposure_uses_absolute_value_for_long_short_books():
+    # a long/short book legitimately sums to ~0 in signed terms but ~1.0
+    # in actual market exposure -- must be measured on |weight|, not the
+    # signed sum, or a real long/short book would falsely look empty.
+    weights = {"AAPL": 0.5, "MSFT": -0.5}
+    result = check_gross_exposure(weights, max_gross_exposure=1.05)
+    assert result["gross_exposure"] == 1.0
+    assert result["within_limits"] is True
