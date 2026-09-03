@@ -11,6 +11,7 @@ import os
 import json
 import threading
 import time
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Optional
 
@@ -134,7 +135,7 @@ def _full_market_scan_loop():
     from momo.sectors import fetch_sectors as _fetch_sectors
 
     while True:
-        if not (os.environ.get("ALPACA_API_KEY") and os.environ.get("ALPACA_SECRET_KEY")):
+        if not _alpaca_keys_present():
             time.sleep(30)
             continue
         with _full_market_lock:
@@ -193,7 +194,7 @@ def _exit_monitor_loop():
     from momo.session import is_market_open
 
     while True:
-        if not (os.environ.get("ALPACA_API_KEY") and os.environ.get("ALPACA_SECRET_KEY")):
+        if not _alpaca_keys_present():
             time.sleep(30)
             continue
         if not is_market_open(pd.Timestamp.utcnow()):
@@ -239,7 +240,7 @@ def _premarket_scan_loop():
     from momo.news import fetch_recent_news, detect_risk_flags, score_sentiment
 
     while True:
-        if not (os.environ.get("ALPACA_API_KEY") and os.environ.get("ALPACA_SECRET_KEY")):
+        if not _alpaca_keys_present():
             time.sleep(30)
             continue
         with _premarket_lock:
@@ -332,13 +333,33 @@ def _start_background_workers():
         threading.Thread(target=_premarket_scan_loop, daemon=True).start()
 
 
+def _alpaca_keys_present() -> bool:
+    return bool(os.environ.get("ALPACA_API_KEY") and os.environ.get("ALPACA_SECRET_KEY"))
+
+
 def _require_alpaca_keys():
-    if not os.environ.get("ALPACA_API_KEY") or not os.environ.get("ALPACA_SECRET_KEY"):
+    if not _alpaca_keys_present():
         raise HTTPException(
             status_code=503,
             detail="Alpaca API keys not configured. Set ALPACA_API_KEY and "
                    "ALPACA_SECRET_KEY (see .env.example) to enable this endpoint.",
         )
+
+
+@contextmanager
+def _fetch_guard(message: str):
+    """try/except -> HTTPException(502, "<message>: <exc>") as a context
+    manager. This exact 4-line try/except block (an HTTPException from
+    inside the block always passes through unwrapped; anything else
+    becomes the standard 502) used to be copy-pasted at every external
+    data-fetch call site in this file -- `with _fetch_guard("..."):`
+    keeps the identical status code and message, written once."""
+    try:
+        yield
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"{message}: {exc}")
 
 
 @app.get("/")
@@ -355,10 +376,8 @@ def quotes(tickers: str):
     import yfinance as yf
 
     ticker_list = tickers.split(",")
-    try:
+    with _fetch_guard("Quote fetch failed"):
         yf_tickers = yf.Tickers(" ".join(ticker_list))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Quote fetch failed: {exc}")
 
     out = {}
     for symbol, t in yf_tickers.tickers.items():
@@ -377,13 +396,11 @@ def momentum_watchlist(
     equity: Optional[float] = None,
 ):
     ticker_list = tickers.split(",") if tickers else DEFAULT_WATCHLIST
-    try:
+    with _fetch_guard("Data fetch failed"):
         report = morning_momentum_report(
             ticker_list, lookback_days=lookback_days, top_n=top_n,
             equity=equity, data_loader_cls=YFDataLoader,
         )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Data fetch failed: {exc}")
     return {"source": "yahoo_finance", "picks": report.to_dict(orient="records")}
 
 
@@ -402,13 +419,11 @@ def momentum_score(ticker: str, lookback_days: int = 400):
     universe = DEFAULT_WATCHLIST if ticker in DEFAULT_WATCHLIST else DEFAULT_WATCHLIST + [ticker]
     end = pd.Timestamp.today().normalize()
     start = end - pd.Timedelta(days=lookback_days)
-    try:
+    with _fetch_guard("Score computation failed"):
         loader = YFDataLoader(universe, start, end)
         prices = loader.load_adj_close()
         scores = Screener().composite_scores(prices)
         latest = scores.iloc[-1]
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Score computation failed: {exc}")
     if ticker not in latest.index or pd.isna(latest[ticker]):
         raise HTTPException(status_code=404, detail=f"No momentum score available for {ticker}")
     return {"ticker": ticker, "momentum_score": round(float(latest[ticker]), 4), "universe_size": len(universe)}
@@ -433,10 +448,8 @@ def ticker_analysis(ticker: str, lookback_days: int = 180):
     ticker = ticker.upper()
     end = pd.Timestamp.today().normalize()
     start = end - pd.Timedelta(days=lookback_days)
-    try:
+    with _fetch_guard("Price history fetch failed"):
         hist = yf.Ticker(ticker).history(start=start, end=end + pd.Timedelta(days=1))
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Price history fetch failed: {exc}")
     if hist.empty or len(hist) < 30:
         raise HTTPException(status_code=404, detail=f"Not enough price history for {ticker} to analyze")
 
@@ -539,13 +552,11 @@ def momentum_full_market(
 ):
     _require_alpaca_keys()
     from momo.data_layer import AlpacaDataLoader
-    try:
+    with _fetch_guard("Full-market scan failed"):
         report = full_market_scan(
             lookback_days=lookback_days, top_n=top_n, min_price=min_price,
             equity=equity, with_news=news, inner_loader_cls=AlpacaDataLoader,
         )
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Full-market scan failed: {exc}")
     return {"source": "alpaca", "picks": report.to_dict(orient="records")}
 
 
@@ -616,14 +627,12 @@ def briefing_audio(equity: Optional[float] = None):
         # Full-market cache isn't warmed up yet (or Alpaca isn't
         # configured) -- fall back to the free watchlist so the briefing
         # still works.
-        try:
+        with _fetch_guard("No picks available to brief"):
             report = morning_momentum_report(
                 DEFAULT_WATCHLIST, top_n=10, equity=equity, data_loader_cls=YFDataLoader,
             )
             picks = report.to_dict(orient="records")
             source = "yahoo_finance"
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"No picks available to brief: {exc}")
     elif equity is not None:
         picks = [{**p, "suggested_dollars": round(p["target_weight"] * equity, 2)} for p in picks]
 
@@ -640,11 +649,9 @@ def briefing_audio(equity: Optional[float] = None):
 def account():
     _require_alpaca_keys()
     from momo.execution import AlpacaBroker
-    try:
+    with _fetch_guard("Alpaca account fetch failed"):
         broker = AlpacaBroker(paper=True)
         return {"equity": broker.get_equity(), "positions": broker.get_positions()}
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Alpaca account fetch failed: {exc}")
 
 
 @app.get("/session/status")
@@ -667,11 +674,9 @@ def intraday_scan(top_n: int = 3, lookback_minutes: int = 240):
     _require_alpaca_keys()
     from momo.intraday import IntradayTrader
 
-    try:
+    with _fetch_guard("Intraday scan failed"):
         trader = IntradayTrader(DEFAULT_WATCHLIST, lookback_minutes=lookback_minutes, top_n=top_n, paper=True)
         weights, prices = trader.latest_target_weights()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Intraday scan failed: {exc}")
 
     picks = [
         {"ticker": t, "target_weight": w, "price": prices.get(t)}
@@ -683,10 +688,8 @@ def intraday_scan(top_n: int = 3, lookback_minutes: int = 240):
 @app.get("/company/info")
 def company_info(ticker: str):
     import yfinance as yf
-    try:
+    with _fetch_guard("Company info fetch failed"):
         info = yf.Ticker(ticker).info
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Company info fetch failed: {exc}")
 
     name = info.get("longName") or info.get("shortName")
     if not name:
@@ -718,11 +721,9 @@ def ticker_intraday_analysis(ticker: str):
     ticker = ticker.upper()
     today = pd.Timestamp.today().normalize()
     start = today - pd.Timedelta(days=5)  # pad past a weekend/holiday to reach the last real session
-    try:
+    with _fetch_guard("Minute-bar fetch failed"):
         loader = AlpacaDataLoader([ticker], start, pd.Timestamp.utcnow(), timeframe_amount=1, timeframe_unit="Minute")
         prices = loader.load_adj_close()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Minute-bar fetch failed: {exc}")
     if ticker not in prices.columns:
         raise HTTPException(status_code=404, detail=f"No minute-bar history for {ticker}")
 
@@ -794,13 +795,11 @@ def momentum_history(ticker: str, time_range: str = Query("3M", alias="range")):
         from momo.data_layer import AlpacaDataLoader
 
         start = today - pd.Timedelta(days=config["days"] + 4)  # pad past weekends/holidays
-        try:
+        with _fetch_guard("Data fetch failed"):
             loader = AlpacaDataLoader(
                 [ticker], start, pd.Timestamp.utcnow(), timeframe_amount=1, timeframe_unit="Minute",
             )
             prices = loader.load_adj_close()
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Data fetch failed: {exc}")
         if ticker not in prices.columns:
             raise HTTPException(status_code=404, detail=f"No minute-bar history for {ticker}")
 
@@ -814,11 +813,9 @@ def momentum_history(ticker: str, time_range: str = Query("3M", alias="range")):
         ]
     else:
         start = pd.Timestamp(f"{today.year}-01-01") if time_range == "YTD" else today - pd.Timedelta(days=config["days"])
-        try:
+        with _fetch_guard("Data fetch failed"):
             loader = YFDataLoader([ticker], start - pd.Timedelta(days=30), today, min_non_na=30)
             prices = loader.load_adj_close()
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail=f"Data fetch failed: {exc}")
         if ticker not in prices.columns:
             raise HTTPException(status_code=404, detail=f"No price history for {ticker}")
 
@@ -841,16 +838,14 @@ def position_preview_endpoint(
     vol_lookback_days: int = 90,
 ):
     today = pd.Timestamp.today().normalize()
-    try:
-        # min_non_na must stay below the window itself -- the 200-trading-day
-        # default assumes a long backtest window, not a short recent-vol read.
+    # min_non_na must stay below the window itself -- the 200-trading-day
+    # default assumes a long backtest window, not a short recent-vol read.
+    with _fetch_guard("Data fetch failed"):
         loader = YFDataLoader(
             [ticker], today - pd.Timedelta(days=vol_lookback_days + 30), today,
             min_non_na=min(30, vol_lookback_days),
         )
         prices = loader.load_adj_close()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Data fetch failed: {exc}")
 
     if ticker not in prices.columns or prices[ticker].dropna().shape[0] < 2:
         raise HTTPException(status_code=404, detail=f"No usable price history for {ticker}")
@@ -896,12 +891,8 @@ def pairs_scan(ticker_a: str, ticker_b: str, lookback_days: int = 60,
     """Statistical relative-value scan, not arbitrage. A high |z-score| means
     this pair's spread is unusually wide relative to its own recent history --
     a probabilistic signal, not a guarantee it reverts."""
-    try:
+    with _fetch_guard("Data fetch failed"):
         price_a, price_b = _fetch_pair_prices(ticker_a, ticker_b, lookback_days)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Data fetch failed: {exc}")
 
     result = scan_pair(ticker_a, price_a, ticker_b, price_b,
                         lookback=lookback_days, z_threshold=z_threshold, min_correlation=min_correlation)
@@ -919,12 +910,8 @@ def pairs_hedge(ticker_a: str, ticker_b: str, position_dollars: float = Query(..
     historical hedge ratio. Reduces exposure to the shared risk factor
     between the two -- it does not create profit, and a ratio computed on
     past data can be wrong for the next move."""
-    try:
+    with _fetch_guard("Data fetch failed"):
         price_a, price_b = _fetch_pair_prices(ticker_a, ticker_b, lookback_days)
-    except HTTPException:
-        raise
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Data fetch failed: {exc}")
 
     from momo.pairs import compute_hedge_ratio
     ratio = compute_hedge_ratio(price_a, price_b, lookback=lookback_days)
@@ -949,11 +936,9 @@ def volatility_garch(ticker: str, lookback_days: int = 250, horizon_days: int = 
     """GARCH(1,1) volatility forecast (Bollerslev 1986) alongside the plain
     historical estimate, so the two can be compared directly."""
     today = pd.Timestamp.today().normalize()
-    try:
+    with _fetch_guard("Data fetch failed"):
         prices = YFDataLoader([ticker], today - pd.Timedelta(days=lookback_days + 30), today,
                                min_non_na=min(50, lookback_days)).load_adj_close()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Data fetch failed: {exc}")
     if ticker not in prices.columns:
         raise HTTPException(status_code=404, detail=f"No usable price history for {ticker}")
 
@@ -971,11 +956,9 @@ def pairs_backtest(ticker_a: str, ticker_b: str, lookback_days: int = 60,
     """Backtests the actual pairs mean-reversion strategy (not just a
     current snapshot), plus a significance test on the resulting returns."""
     today = pd.Timestamp.today().normalize()
-    try:
+    with _fetch_guard("Data fetch failed"):
         prices = YFDataLoader([ticker_a, ticker_b], today - pd.Timedelta(days=window_days + 260), today,
                                min_non_na=min(60, window_days)).load_adj_close()
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail=f"Data fetch failed: {exc}")
     missing = [t for t in (ticker_a, ticker_b) if t not in prices.columns]
     if missing:
         raise HTTPException(status_code=404, detail=f"No usable price history for {missing}")

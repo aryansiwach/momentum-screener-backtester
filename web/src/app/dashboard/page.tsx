@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type MouseEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import { motion } from "motion/react";
 import {
   TrendUp,
@@ -653,14 +653,7 @@ export default function Dashboard() {
 
         {loading && !data && <TableSkeleton />}
 
-        {error && (
-          <div
-            className="mb-6 rounded-lg border p-4 text-sm"
-            style={{ borderColor: `${c.destructive}40`, backgroundColor: `${c.destructive}14`, color: "#FCA5A5" }}
-          >
-            {error}
-          </div>
-        )}
+        {error && <ErrorBox className="mb-6 rounded-lg border p-4 text-sm">{error}</ErrorBox>}
 
         {data && data.picks.length > 0 && (
           <div
@@ -796,14 +789,7 @@ export default function Dashboard() {
             </motion.button>
           </div>
 
-          {previewError && (
-            <div
-              className="mt-4 rounded-md border p-3 text-sm"
-              style={{ borderColor: `${c.destructive}40`, backgroundColor: `${c.destructive}14`, color: "#FCA5A5" }}
-            >
-              {previewError}
-            </div>
-          )}
+          {previewError && <ErrorBox className="mt-4 rounded-md border p-3 text-sm">{previewError}</ErrorBox>}
 
           {preview && (
             <>
@@ -812,29 +798,33 @@ export default function Dashboard() {
                 Auto-updating every 30s
               </div>
               <div className="grid grid-cols-2 gap-4 sm:grid-cols-4">
-                <PreviewStat label="Entry price" value={`$${preview.entry_price.toFixed(2)}`} />
-                <PreviewStat label="Shares" value={preview.shares.toFixed(4)} />
-                <PreviewStat
+                <StatCard compact label="Entry price" value={`$${preview.entry_price.toFixed(2)}`} />
+                <StatCard compact label="Shares" value={preview.shares.toFixed(4)} />
+                <StatCard
+                  compact
                   label={`Take-profit (${preview.take_profit_pct}%)`}
                   value={`$${preview.take_profit_price.toFixed(2)}`}
                   tone="positive"
                 />
-                <PreviewStat
+                <StatCard
+                  compact
                   label={`Stop-loss (${preview.stop_loss_pct}%)`}
                   value={`$${preview.stop_loss_price.toFixed(2)}`}
                   tone="negative"
                 />
-                <PreviewStat
+                <StatCard
+                  compact
                   label="Est. high (1σ, 1 day)"
                   value={`$${preview.historical_range.estimated_high_price.toFixed(2)} (+${preview.historical_range.expected_up_pct}%)`}
                   tone="positive"
                 />
-                <PreviewStat
+                <StatCard
+                  compact
                   label="Est. low (1σ, 1 day)"
                   value={`$${preview.historical_range.estimated_low_price.toFixed(2)} (${preview.historical_range.expected_down_pct}%)`}
                   tone="negative"
                 />
-                <PreviewStat label="Trailing stop" value={`${preview.trailing_stop_pct}%`} />
+                <StatCard compact label="Trailing stop" value={`${preview.trailing_stop_pct}%`} />
               </div>
               <p className="mt-4 text-xs" style={{ color: c.mutedDim }}>
                 {preview.disclaimer}
@@ -1518,14 +1508,7 @@ function SelectedTickerPanel({
             </div>
           )}
 
-          {error && (
-            <div
-              className="mt-4 rounded-md border p-3 text-sm"
-              style={{ borderColor: `${c.destructive}40`, backgroundColor: `${c.destructive}14`, color: "#FCA5A5" }}
-            >
-              {error}
-            </div>
-          )}
+          {error && <ErrorBox className="mt-4 rounded-md border p-3 text-sm">{error}</ErrorBox>}
 
           {data && data.points.length > 1 && <PriceChart points={data.points} granularity={data.granularity} />}
         </div>
@@ -1670,12 +1653,9 @@ function TickerAnalysisPanel({
 
   if (error) {
     return (
-      <section
-        className="mb-8 rounded-xl border p-5 text-sm"
-        style={{ borderColor: `${c.destructive}40`, backgroundColor: `${c.destructive}14`, color: "#FCA5A5" }}
-      >
+      <ErrorBox as="section" className="mb-8 rounded-xl border p-5 text-sm">
         {error}
-      </section>
+      </ErrorBox>
     );
   }
 
@@ -1716,38 +1696,8 @@ function TickerAnalysisPanel({
             )}
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-            <div className="rounded-lg border p-3" style={{ borderColor: `${c.accent}30`, backgroundColor: c.cardAlt }}>
-              <div className="mb-1.5 text-xs font-semibold" style={{ color: c.accent }}>
-                Bull case
-              </div>
-              {bull_bear_case.bull_points.length > 0 ? (
-                <ul className="flex flex-col gap-1.5 text-xs" style={{ color: c.muted }}>
-                  {bull_bear_case.bull_points.map((p, i) => (
-                    <li key={i}>{p}</li>
-                  ))}
-                </ul>
-              ) : (
-                <span className="text-xs" style={{ color: c.mutedDim }}>
-                  No bullish points from the current data.
-                </span>
-              )}
-            </div>
-            <div className="rounded-lg border p-3" style={{ borderColor: `${c.destructive}30`, backgroundColor: c.cardAlt }}>
-              <div className="mb-1.5 text-xs font-semibold" style={{ color: c.destructive }}>
-                Bear case
-              </div>
-              {bull_bear_case.bear_points.length > 0 ? (
-                <ul className="flex flex-col gap-1.5 text-xs" style={{ color: c.muted }}>
-                  {bull_bear_case.bear_points.map((p, i) => (
-                    <li key={i}>{p}</li>
-                  ))}
-                </ul>
-              ) : (
-                <span className="text-xs" style={{ color: c.mutedDim }}>
-                  No bearish points from the current data.
-                </span>
-              )}
-            </div>
+            <CaseColumn label="Bull case" points={bull_bear_case.bull_points} tone={c.accent} emptyWord="bullish" />
+            <CaseColumn label="Bear case" points={bull_bear_case.bear_points} tone={c.destructive} emptyWord="bearish" />
           </div>
           <p className="mt-2 text-[11px]" style={{ color: c.mutedDim }}>
             Same data, read from both sides — not two opinions, and not a recommendation either way.
@@ -1875,6 +1825,30 @@ function TickerAnalysisPanel({
         Descriptive signals from historical data — not investment advice, and not a guarantee against loss.
       </p>
     </section>
+  );
+}
+
+// The bull-case and bear-case boxes are the same shape (a tinted card, a
+// label, a bulleted list or an empty-state line) with only the color,
+// heading, and point list actually differing between them.
+function CaseColumn({ label, points, tone, emptyWord }: { label: string; points: string[]; tone: string; emptyWord: string }) {
+  return (
+    <div className="rounded-lg border p-3" style={{ borderColor: `${tone}30`, backgroundColor: c.cardAlt }}>
+      <div className="mb-1.5 text-xs font-semibold" style={{ color: tone }}>
+        {label}
+      </div>
+      {points.length > 0 ? (
+        <ul className="flex flex-col gap-1.5 text-xs" style={{ color: c.muted }}>
+          {points.map((p, i) => (
+            <li key={i}>{p}</li>
+          ))}
+        </ul>
+      ) : (
+        <span className="text-xs" style={{ color: c.mutedDim }}>
+          No {emptyWord} points from the current data.
+        </span>
+      )}
+    </div>
   );
 }
 
@@ -2146,53 +2120,53 @@ function ScoreBar({ value }: { value: number }) {
   );
 }
 
+type Tone = "positive" | "negative" | "neutral";
+const toneColor = (tone: Tone) => (tone === "positive" ? c.accent : tone === "negative" ? c.destructive : c.fg);
+
+// StatCard (boxed, larger) and the old PreviewStat (bare, compact) were the
+// same {label, value, tone} card with two size presets -- one component,
+// one `compact` switch, instead of two near-duplicate definitions.
 function StatCard({
   label,
   value,
   tone = "neutral",
+  compact = false,
 }: {
   label: string;
   value: string;
-  tone?: "positive" | "negative" | "neutral";
+  tone?: Tone;
+  compact?: boolean;
 }) {
-  const toneColor = tone === "positive" ? c.accent : tone === "negative" ? c.destructive : c.fg;
-  return (
-    <div className="rounded-xl border p-4" style={{ borderColor: c.border, backgroundColor: c.card }}>
-      <div className="text-xs uppercase tracking-wide" style={{ color: c.muted }}>
+  const body = (
+    <>
+      <div className={compact ? "text-[11px] uppercase tracking-wide" : "text-xs uppercase tracking-wide"} style={{ color: c.muted }}>
         {label}
       </div>
       <div
-        className="mt-1 text-xl font-semibold tabular-nums"
-        style={{ color: toneColor, fontFamily: "var(--font-fira-code)" }}
+        className={compact ? "mt-0.5 text-sm font-medium tabular-nums" : "mt-1 text-xl font-semibold tabular-nums"}
+        style={{ color: toneColor(tone), fontFamily: "var(--font-fira-code)" }}
       >
         {value}
       </div>
+    </>
+  );
+  return compact ? (
+    <div>{body}</div>
+  ) : (
+    <div className="rounded-xl border p-4" style={{ borderColor: c.border, backgroundColor: c.card }}>
+      {body}
     </div>
   );
 }
 
-function PreviewStat({
-  label,
-  value,
-  tone = "neutral",
-}: {
-  label: string;
-  value: string;
-  tone?: "positive" | "negative" | "neutral";
-}) {
-  const toneColor = tone === "positive" ? c.accent : tone === "negative" ? c.destructive : c.fg;
+// The same destructive-tinted message box (border/background/text color)
+// used to be copy-pasted at every error site with only the box model
+// (div/section, margin, radius, padding) actually differing.
+function ErrorBox({ as: As = "div", className, children }: { as?: "div" | "section"; className: string; children: ReactNode }) {
   return (
-    <div>
-      <div className="text-[11px] uppercase tracking-wide" style={{ color: c.muted }}>
-        {label}
-      </div>
-      <div
-        className="mt-0.5 text-sm font-medium tabular-nums"
-        style={{ color: toneColor, fontFamily: "var(--font-fira-code)" }}
-      >
-        {value}
-      </div>
-    </div>
+    <As className={className} style={{ borderColor: `${c.destructive}40`, backgroundColor: `${c.destructive}14`, color: "#FCA5A5" }}>
+      {children}
+    </As>
   );
 }
 
