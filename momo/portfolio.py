@@ -18,7 +18,7 @@ class PortfolioConstructor:
     def construct_weights(self, score: pd.DataFrame) -> pd.DataFrame:
         # rebalance dates (end of each period)
         rebal_dates = score.resample(self.rebalance).last().index
-        weights = pd.DataFrame(0.0, index=score.index, columns=score.columns)
+        weights = pd.DataFrame(np.nan, index=score.index, columns=score.columns)
 
         for dt in rebal_dates:
             row = score.loc[:dt].iloc[-1]
@@ -29,10 +29,16 @@ class PortfolioConstructor:
             w_long = 1.0 / (n_l + n_s) if n_s == 0 else 0.5 / n_l
             w_short = -0.5 / n_s if n_s > 0 else 0
 
+            # Every ticker must be explicitly zeroed at each rebalance before
+            # the picks are set. Leaving non-picks untouched (as plain 0.0)
+            # made them indistinguishable from "not yet reached its first
+            # rebalance" once ffill ran -- a ticker dropped from the picks
+            # kept its old nonzero weight forever instead of resetting to 0.
+            weights.loc[dt, :] = 0.0
             weights.loc[dt, longs] = w_long
             if n_s > 0:
                 weights.loc[dt, shorts] = w_short
 
         # forward-fill until next rebalance
-        weights = weights.replace(0, np.nan).ffill().fillna(0)
+        weights = weights.ffill().fillna(0)
         return weights

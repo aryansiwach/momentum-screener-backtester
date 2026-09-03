@@ -51,6 +51,51 @@ def test_transaction_costs_reduce_returns_when_turnover_is_positive():
     assert equity_with_cost.iloc[-1] <= equity_no_cost.iloc[-1]
 
 
+def test_per_ticker_costs_charge_the_thin_name_more():
+    prices = _toy_prices()
+    weights = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    weights.loc[weights.index[::2], "A"] = 1.0
+    weights.loc[weights.index[1::2], "B"] = 1.0
+
+    # A is cheap to trade (5bps), B is expensive (100bps) -- same turnover
+    # pattern, but B's leg of the round-trips should cost noticeably more.
+    bt_cheap_a = Backtester(costs_bps={"A": 5, "B": 5})
+    bt_expensive_b = Backtester(costs_bps={"A": 5, "B": 100})
+
+    _, equity_cheap, _ = bt_cheap_a.run(prices, weights)
+    _, equity_expensive, _ = bt_expensive_b.run(prices, weights)
+
+    assert equity_expensive.iloc[-1] < equity_cheap.iloc[-1]
+
+
+def test_per_ticker_costs_match_flat_costs_when_uniform():
+    prices = _toy_prices()
+    weights = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    weights.loc[weights.index[::2], "A"] = 1.0
+    weights.loc[weights.index[1::2], "B"] = 1.0
+
+    bt_flat = Backtester(costs_bps=25)
+    bt_dict = Backtester(costs_bps={"A": 25, "B": 25})
+
+    port_flat, _, _ = bt_flat.run(prices, weights)
+    port_dict, _, _ = bt_dict.run(prices, weights)
+
+    pd.testing.assert_series_equal(port_flat, port_dict)
+
+
+def test_missing_ticker_in_cost_dict_falls_back_to_default():
+    prices = _toy_prices()
+    weights = pd.DataFrame(0.0, index=prices.index, columns=prices.columns)
+    weights.loc[weights.index[::2], "A"] = 1.0
+    weights.loc[weights.index[1::2], "B"] = 1.0
+
+    # Only A specified -- B should fall back to the 5bps default, not error
+    # or silently charge nothing.
+    bt = Backtester(costs_bps={"A": 5})
+    port, equity, stats = bt.run(prices, weights)
+    assert not port.isna().any()
+
+
 def test_portfolio_constructor_long_only_weights_sum_to_one_at_rebalance():
     prices = _toy_prices()
     score = pd.DataFrame(

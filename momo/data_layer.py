@@ -1,7 +1,9 @@
-"""Price data loaders: a synthetic GBM generator for demos, and a Yahoo
-Finance loader that normalizes yfinance's inconsistent column layouts into
-a clean tickers-as-columns DataFrame of adjusted close prices."""
+"""Price data loaders: a synthetic GBM generator for demos, a Yahoo Finance
+loader that normalizes yfinance's inconsistent column layouts, and an
+Alpaca loader for real(ish)-time bars usable in live trading. All expose
+the same load_adj_close() -> tickers-as-columns DataFrame interface."""
 
+import os
 import pandas as pd
 import numpy as np
 
@@ -113,3 +115,134 @@ class YFDataLoader:
         if prices.shape[1] == 0:
             raise ValueError("No tickers have sufficient data after cleaning.")
         return prices
+
+
+# -------- Alpaca loader (for live/paper trading) --------
+class AlpacaDataLoader:
+    def __init__(self, tickers, start, end, api_key=None, secret_key=None, feed="iex",
+                 timeframe_amount=1, timeframe_unit="Day"):
+        self.tickers    = list(dict.fromkeys(tickers))
+        self.start      = pd.Timestamp(start)
+        self.end        = pd.Timestamp(end)
+        self.api_key    = api_key or os.environ["ALPACA_API_KEY"]
+        self.secret_key = secret_key or os.environ["ALPACA_SECRET_KEY"]
+        self.feed       = feed
+        self.timeframe_amount = timeframe_amount
+        self.timeframe_unit   = timeframe_unit
+
+    def _bars(self):
+        from alpaca.data.historical import StockHistoricalDataClient
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
+        client = StockHistoricalDataClient(self.api_key, self.secret_key)
+        # TimeFrameUnit's *values* are irregular ("Min" for Minute, "Day" for
+        # Day) -- look up by member name instead of constructing from a
+        # string value, or "Minute" raises ValueError.
+        timeframe = TimeFrame(self.timeframe_amount, getattr(TimeFrameUnit, self.timeframe_unit))
+        req = StockBarsRequest(
+            symbol_or_symbols=self.tickers,
+            timeframe=timeframe,
+            start=self.start,
+            end=self.end,
+            feed=self.feed,
+        )
+        bars = client.get_stock_bars(req).df
+        if bars.empty:
+            raise ValueError(f"Alpaca returned no bars for {self.tickers} between {self.start} and {self.end}")
+        return bars
+
+    def load_adj_close(self) -> pd.DataFrame:
+        bars = self._bars()
+        prices = bars["close"].unstack(level=0)
+        prices.index = pd.to_datetime(prices.index)
+        return prices.sort_index()
+
+    def load_ohlcv(self) -> dict:
+        """Per-ticker OHLCV DataFrames -- volume is needed for intraday
+        signals (VWAP, volume-confirmed breakouts) that close-only data
+        can't support."""
+        bars = self._bars()
+        out = {}
+        for ticker in self.tickers:
+            if ticker not in bars.index.get_level_values(0):
+                continue
+            df = bars.xs(ticker, level=0)[["open", "high", "low", "close", "volume"]].copy()
+            df.index = pd.to_datetime(df.index)
+            out[ticker] = df.sort_index()
+        return out
+
+
+# -------- WRDS loader (for deep historical backtesting, not live trading) --------
+class WRDSDataLoader:
+    """Adjusted-close prices from the WRDS CRSP daily stock file -- built for
+    backtest depth/rigor, not live execution (CRSP data lags by days).
+    Requires a WRDS account with CRSP access; connects via the official
+    `wrds` package (prompts for a password unless ~/.pgpass or
+    WRDS_USERNAME/WRDS_PASSWORD env vars are set)."""
+
+    def __init__(self, tickers, start, end, wrds_username=None):
+        self.tickers = list(dict.fromkeys(tickers))
+        self.start = pd.Timestamp(start)
+        self.end = pd.Timestamp(end)
+        self.wrds_username = wrds_username or os.environ.get("WRDS_USERNAME")
+
+    def load_adj_close(self) -> pd.DataFrame:
+        import wrds
+        db = wrds.Connection(wrds_username=self.wrds_username)
+        try:
+            tickers_sql = ", ".join(f"'{t}'" for t in self.tickers)
+            query = f"""
+                select a.date, b.ticker, a.prc, a.cfacpr
+                from crsp.dsf as a
+                join crsp.dsenames as b
+                  on a.permno = b.permno
+                 and a.date between b.namedt and coalesce(b.nameendt, a.date)
+                where b.ticker in ({tickers_sql})
+                  and a.date between '{self.start.date()}' and '{self.end.date()}'
+            """
+            df = db.raw_sql(query, date_cols=["date"])
+        finally:
+            db.close()
+
+        if df.empty:
+            raise ValueError(
+                f"WRDS returned no CRSP data for {self.tickers} between "
+                f"{self.start.date()} and {self.end.date()}"
+            )
+
+        # CRSP prc is negative when it's a bid/ask midpoint rather than a
+        # trade price; cfacpr is the cumulative split/dividend adjustment
+        # factor -- dividing by it reproduces CRSP's own adjusted price.
+        df["adj_close"] = df["prc"].abs() / df["cfacpr"]
+        prices = df.pivot(index="date", columns="ticker", values="adj_close")
+        return prices.sort_index()
+
+
+# -------- Chunked wrapper (for scanning large ticker universes) --------
+class ChunkedLoader:
+    """Wraps another loader class to fetch a large ticker list in batches --
+    most data APIs cap symbols per request -- concatenating the results.
+    Skips any chunk that errors (e.g. a delisted ticker) instead of failing
+    the whole scan."""
+
+    def __init__(self, tickers, start, end, inner_loader_cls=None, chunk_size=200, inner_kwargs=None):
+        self.tickers = list(dict.fromkeys(tickers))
+        self.start = start
+        self.end = end
+        self.inner_loader_cls = inner_loader_cls or YFDataLoader
+        self.chunk_size = chunk_size
+        self.inner_kwargs = inner_kwargs or {}
+
+    def load_adj_close(self) -> pd.DataFrame:
+        frames = []
+        for i in range(0, len(self.tickers), self.chunk_size):
+            chunk = self.tickers[i:i + self.chunk_size]
+            try:
+                loader = self.inner_loader_cls(chunk, self.start, self.end, **self.inner_kwargs)
+                frames.append(loader.load_adj_close())
+            except Exception:
+                continue
+        if not frames:
+            raise ValueError("No price data returned for any ticker in the universe.")
+        return pd.concat(frames, axis=1)

@@ -34,4 +34,4 @@ def stochastic(prices: pd.DataFrame, window: int = 14):
     return k, d
 
 def momentum_return(prices: pd.DataFrame, period: int = 63):
-    return prices.pct_change(periods=period)
+    return prices.pct_change(periods=period, fill_method=None)

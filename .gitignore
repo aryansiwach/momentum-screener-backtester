@@ -11,3 +11,7 @@ venv/
 # OS
 .DS_Store
 Thumbs.db
+
+# Secrets / local state
+.env
+progress/

@@ -30,20 +30,63 @@ strategy over that window, not a broken placeholder.
 ```
 app.py                 Streamlit UI -- wires the pieces below together
 momo/
-  data_layer.py         Price loaders: Yahoo Finance (real) or synthetic GBM (demo)
+  data_layer.py         Price loaders: Yahoo Finance, Alpaca (live), or synthetic GBM (demo)
   indicators.py          SMA, EMA, RSI, MACD, Stochastic, momentum return
   screener.py             Composite percentile-ranked momentum score
   portfolio.py            Turns scores into rebalanced long/short weights
   backtest.py              Vectorized backtest + performance stats
   orchestrator.py           Wires loader -> screener -> portfolio -> backtest
-  visualize.py               Matplotlib charts (used outside the Streamlit UI)
-tests/                  pytest suite for indicators and backtest logic
+  execution.py               Target weights -> broker orders (Alpaca), pure sizing logic
+  live.py                     Wires the pipeline + Alpaca data + execution together
+  reporting.py                 Morning momentum report + equity/position progress log
+  visualize.py                  Matplotlib charts (used outside the Streamlit UI)
+scripts/
+  morning_report.py       CLI: today's momentum picks + suggested $ sizing
+tests/                  pytest suite for indicators, backtest, and order-sizing logic
 results/, results_full_run/    Sample output from real runs
 ```
 
 The package layer (`momo/`) has no Streamlit dependency and no I/O beyond
 price loading — `MomentumPipeline` in `orchestrator.py` is a plain Python
 object you can drive from a script, a notebook, or a different UI entirely.
+
+## Live / paper trading (Alpaca)
+
+1. Create a free Alpaca account and generate **paper trading** API keys at
+   alpaca.markets.
+2. Copy `.env.example` to `.env` and fill in `ALPACA_API_KEY` /
+   `ALPACA_SECRET_KEY`. `.env` is gitignored — never commit real keys.
+3. Install the extra dependencies: `pip install -r requirements.txt`.
+4. Dry-run a rebalance (computes orders, submits nothing):
+
+   ```python
+   from dotenv import load_dotenv; load_dotenv()
+   from momo.live import LiveMomentumTrader
+
+   trader = LiveMomentumTrader(["AAPL","MSFT","NVDA","META","GOOGL"], top_n=3, paper=True)
+   print(trader.rebalance(dry_run=True))
+   ```
+
+5. Once the dry-run output looks right, call `trader.rebalance(dry_run=False)`
+   to actually submit paper orders. `paper=True` is the default everywhere —
+   switching to a live (real-money) account requires deliberately passing
+   `paper=False`, on purpose, so it can't happen by accident.
+6. Every non-dry-run rebalance appends an equity/position snapshot to
+   `progress/equity_log.csv` (gitignored) via `momo.reporting.log_progress_snapshot`
+   — read it back with `momo.reporting.load_progress_log()`.
+
+For a daily momentum readout without trading:
+
+```bash
+python scripts/morning_report.py AAPL MSFT NVDA META GOOGL TSLA --top-n 5 --equity 10000
+```
+
+Add `--alpaca` to pull live Alpaca data and size against your real paper/live
+account equity instead of a manually-supplied number.
+
+**Start on paper, not live money.** Nothing here models slippage, partial
+fills, or PDT-rule/margin constraints the way a real live account would
+enforce them — validate the whole loop on paper first.
 
 ## Running it
 
